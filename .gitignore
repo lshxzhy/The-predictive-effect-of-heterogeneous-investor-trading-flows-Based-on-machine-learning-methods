@@ -1,0 +1,16 @@
+# Data and private materials
+data/
+docs/
+references/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Notebook / temp
+.ipynb_checkpoints/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
