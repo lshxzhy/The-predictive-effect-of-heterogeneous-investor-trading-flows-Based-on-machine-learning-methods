@@ -3,10 +3,9 @@ from pathlib import Path
 import joblib
 import matplotlib.pyplot as plt
 import pandas as pd
-from sklearn.tree import export_text, plot_tree
 
 
-MODEL_ID = "dt_cls"
+MODEL_ID = "rf_cls"
 EXCLUDE_MODEL_COLS = {"Date", "y", "qzenergy_garch_lag1"}
 
 
@@ -26,10 +25,8 @@ def get_paths(project_root):
     paths = {
         "processed_dir": processed_dir,
         "model": model_file,
-        "tree_png": out_dir / "tree_structure.png",
         "importance_png": out_dir / "feature_importance.png",
         "importance_csv": out_dir / "feature_importance.csv",
-        "rules_txt": out_dir / "tree_rules.txt",
     }
     return paths
 
@@ -77,46 +74,16 @@ def save_feature_importance(importance_df, output_file):
 
 def plot_feature_importance(importance_df, output_file):
     """绘制特征重要性图。"""
-    plot_df = importance_df.sort_values("importance", ascending=True)
+    plot_df = importance_df.sort_values("importance", ascending=True).tail(20)
 
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(10, 8))
     plt.barh(plot_df["feature"], plot_df["importance"])
     plt.xlabel("Importance")
     plt.ylabel("Feature")
-    plt.title("Decision Tree Feature Importance")
+    plt.title("Random Forest Feature Importance")
     plt.tight_layout()
     plt.savefig(output_file, dpi=200, bbox_inches="tight")
     plt.close()
-
-
-def plot_tree_structure(model, feature_names, output_file):
-    """绘制决策树结构图。"""
-    plt.figure(figsize=(24, 12))
-    plot_tree(
-        model,
-        feature_names=feature_names,
-        class_names=["0", "1"],
-        filled=True,
-        rounded=True,
-        impurity=True,
-        proportion=True,
-        precision=3,
-        fontsize=9,
-    )
-    plt.title("Decision Tree Structure")
-    plt.tight_layout()
-    plt.savefig(output_file, dpi=200, bbox_inches="tight")
-    plt.close()
-
-
-def save_tree_rules(model, feature_names, output_file):
-    """导出决策树文本规则。"""
-    rules = export_text(
-        model,
-        feature_names=list(feature_names),
-        decimals=4,
-    )
-    output_file.write_text(rules, encoding="utf-8")
 
 
 def main():
@@ -131,14 +98,10 @@ def main():
 
     save_feature_importance(importance_df, paths["importance_csv"])
     plot_feature_importance(importance_df, paths["importance_png"])
-    plot_tree_structure(model, feature_names, paths["tree_png"])
-    save_tree_rules(model, feature_names, paths["rules_txt"])
 
     print("可视化文件已保存：")
-    print(paths["tree_png"])
     print(paths["importance_png"])
     print(paths["importance_csv"])
-    print(paths["rules_txt"])
 
 
 if __name__ == "__main__":

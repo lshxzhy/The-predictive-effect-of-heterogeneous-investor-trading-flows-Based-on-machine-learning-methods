@@ -3,6 +3,7 @@ import argparse
 
 import joblib
 import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import (
     accuracy_score,
     f1_score,
@@ -12,10 +13,9 @@ from sklearn.metrics import (
     roc_curve,
 )
 from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
-from sklearn.tree import DecisionTreeClassifier
 
 
-MODEL_ID = "dt_cls"
+MODEL_ID = "rf_cls"
 RANDOM_STATE = 42
 CV_SPLITS = 5
 GRID_SEARCH_SCORING = "roc_auc"
@@ -36,33 +36,59 @@ def load_data(processed_dir):
 
 
 def build_param_grid():
-    """返回决策树参数网格。"""
+    """返回完整参数版随机森林参数网格。"""
     param_grid = {
+        # n_estimators：森林中树的数量。
+        # 取值范围：正整数，常见 100 到 1000。
+        # 变化趋势：越大通常越稳定、方差越低，但训练更慢；它主要提升稳定性，不是直接让模型更简单。
+        "n_estimators": [500],
+
         # criterion：节点分裂的评价标准。
+        # 取值范围："gini"、"entropy"、"log_loss"。
+        # 变化趋势：不同准则会改变分裂偏好，通常不是控制过拟合的第一参数。
         "criterion": ["entropy"],
 
-        # max_depth：树的最大深度。
-        "max_depth": [6],
+        # max_depth：每棵树的最大深度。
+        # 取值范围：正整数或 None；None 表示尽量继续分裂。
+        # 变化趋势：越小越保守，越大越容易过拟合。
+        "max_depth": [3],
 
         # min_samples_split：一个节点继续分裂所需的最小样本数。
-        "min_samples_split": [50],
+        # 取值范围：整数 >= 2，或 (0, 1] 的比例；这里使用整数。
+        # 变化趋势：越大越不容易继续分裂，模型越保守，越能抑制过拟合。
+        "min_samples_split": [200],
 
         # min_samples_leaf：每个叶节点至少保留的样本数。
-        "min_samples_leaf": [20],
+        # 取值范围：整数 >= 1，或 (0, 1] 的比例；这里使用整数。
+        # 变化趋势：越大叶子越大、树越平滑，过拟合通常越弱，但过大可能欠拟合。
+        "min_samples_leaf": [49],
+
 
         # max_features：每次分裂时可参与候选的特征数。
+        # 取值范围：整数、浮点比例、"sqrt"、"log2" 或 None。
+        # 变化趋势：越小，单棵树相关性通常越低、过拟合通常更弱；越大，单棵树更强但更容易学得太细。
         "max_features": [0.7],
 
+        # min_impurity_decrease：允许分裂所需达到的最小纯度提升。
+        # 取值范围：大于等于 0 的浮点数，常见 0 到 0.01。
+        # 变化趋势：越大越难分裂，树越简单，越能限制过拟合。
+        "min_impurity_decrease": [0.008],
+
         # class_weight：类别权重。
+        # 取值范围：None、"balanced"、"balanced_subsample" 或自定义字典。
+        # 变化趋势：主要影响对少数类的重视程度，不是专门控制过拟合，但会改变 precision / recall 的平衡。
         "class_weight": [None],
 
-        # ccp_alpha：后剪枝强度。
-        "ccp_alpha": [0.000],
+        # ccp_alpha：代价复杂度剪枝强度。
+        # 取值范围：大于等于 0 的浮点数，常见 0 到 0.01。
+        # 变化趋势：越大剪枝越强，树越简单，越能抑制过拟合；过大可能明显欠拟合。
+        "ccp_alpha": [0.015],
 
-        # min_impurity_decrease：允许分裂所需达到的最小纯度提升。
-        "min_impurity_decrease": [0.000],
     }
+
+
     return param_grid
+
 
 
 def get_paths(project_root):
@@ -84,7 +110,7 @@ def get_paths(project_root):
 
 def run_grid_search(X_train, y_train, param_grid):
     """使用时间序列交叉验证执行网格搜索。"""
-    model = DecisionTreeClassifier(random_state=RANDOM_STATE)
+    model = RandomForestClassifier(random_state=RANDOM_STATE, n_jobs=N_JOBS)
     cv = TimeSeriesSplit(n_splits=CV_SPLITS)
 
     search = GridSearchCV(
