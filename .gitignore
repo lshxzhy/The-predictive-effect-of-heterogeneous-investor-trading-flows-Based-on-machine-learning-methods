@@ -2,6 +2,8 @@
 data/
 docs/
 references/
+models/
+outputs/dt_cls/
 
 # Python cache
 __pycache__/
@@ -14,3 +16,5 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .vscode/
+
+
