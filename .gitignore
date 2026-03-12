@@ -4,6 +4,10 @@ docs/
 references/
 models/
 outputs/dt_cls/
+AGENTS.md
+PROJECT_STATUS.md
+LEARNING_WORKFLOW.md
+
 
 # Python cache
 __pycache__/
