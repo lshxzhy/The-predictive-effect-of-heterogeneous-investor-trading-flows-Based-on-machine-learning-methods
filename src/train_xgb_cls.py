@@ -1,263 +1,224 @@
-from pathlib import Path
 import argparse
 
-import joblib
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    f1_score,
-    precision_score,
-    recall_score,
-    roc_auc_score,
-    roc_curve,
-)
-from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from xgboost import XGBClassifier
+
+from config import RuntimeContext, get_runtime_context
+from training_utils import (
+    align_features,
+    build_prediction_frame,
+    evaluate_model,
+    load_model_bundle,
+    require_feature_names,
+    run_holdout_search,
+    save_model_bundle,
+)
 
 
 MODEL_ID = "xgb_cls"
 RANDOM_STATE = 42
-CV_SPLITS = 5
-GRID_SEARCH_SCORING = "roc_auc"
 N_JOBS = -1
 
 
-def load_data(processed_dir):
-    """读取训练集和测试集，并拆分特征与标签。"""
-    train_df = pd.read_csv(processed_dir / "train_model_input.csv", parse_dates=["Date"])
-    test_df = pd.read_csv(processed_dir / "test_model_input.csv", parse_dates=["Date"])
-
-    X_train = train_df.drop(columns=["Date", "y", "qzenergy_garch_lag1"])
-    y_train = train_df["y"].astype(int)
-    X_test = test_df.drop(columns=["Date", "y", "qzenergy_garch_lag1"])
-    y_test = test_df["y"].astype(int)
-
-    return X_train, y_train, X_test, y_test
+def cleanup_legacy_output_files(ctx: RuntimeContext) -> None:
+    """清理模型目录下已经废弃的旧结果文件。"""
+    legacy_files = [
+        ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "cv_results.csv"),
+    ]
+    for file_path in legacy_files:
+        if file_path.exists():
+            file_path.unlink()
 
 
-def build_param_grid():
+def load_split_frame(ctx: RuntimeContext, split_name: str) -> pd.DataFrame:
+    """读取单个数据分段。"""
+    return pd.read_csv(ctx.paths.model_input_file(split_name), parse_dates=["Date"])
+
+
+def split_to_xy(
+    df: pd.DataFrame,
+    ctx: RuntimeContext,
+) -> tuple[pd.Series, pd.DataFrame, pd.Series]:
+    """拆分日期、特征和标签。"""
+    target_label_col = ctx.config.target_label_col(ctx.horizon)
+    required_cols = ["Date", target_label_col]
+    missing_cols = [col for col in required_cols if col not in df.columns]
+    if missing_cols:
+        raise ValueError(f"{ctx.scheme_name} 缺少建模列：{missing_cols}")
+    dates = df["Date"].copy()
+    X = df.drop(columns=["Date", target_label_col])
+    y = df[target_label_col].astype(int)
+    return dates, X, y
+
+
+def load_datasets(
+    ctx: RuntimeContext,
+) -> tuple[dict[str, dict[str, object]], list[str]]:
+    """读取训练集、验证集和测试集。"""
+    datasets: dict[str, dict[str, object]] = {}
+
+    for split_name in ["train", "valid", "test"]:
+        df = load_split_frame(ctx, split_name)
+        dates, X, y = split_to_xy(df, ctx)
+        datasets[split_name] = {"dates": dates, "X": X, "y": y}
+
+    feature_names = datasets["train"]["X"].columns.tolist()
+    for split_name in ["valid", "test"]:
+        datasets[split_name]["X"] = align_features(
+            datasets[split_name]["X"],
+            feature_names,
+        )
+
+    return datasets, feature_names
+
+
+def build_param_grid() -> dict:
     """返回 XGBoost 参数网格。"""
-    param_grid = {
-        # n_estimators：树的数量。
-        # 取值范围：正整数，常见 100 到 1000。
-        # 变化趋势：越大通常越强，但训练更慢；如果学习率不变，过大也更容易过拟合。
+    return {
         "n_estimators": [600],
-
-        # learning_rate：每棵树的学习步长。
-        # 取值范围：0 到 1 之间，常见 0.01 到 0.3。
-        # 变化趋势：越小学习越慢、更稳；越大收敛更快，但更容易学得过头。
         "learning_rate": [0.02],
-
-        # max_depth：每棵树的最大深度。
-        # 取值范围：正整数，常见 2 到 10。
-        # 变化趋势：越大越容易拟合复杂关系，但过拟合风险更高。
         "max_depth": [5],
-
-        # min_child_weight：子节点所需的最小样本权重和。
-        # 取值范围：大于等于 0，常见 1 到 20。
-        # 变化趋势：越大越保守，越不容易继续分裂，可抑制过拟合。
         "min_child_weight": [50],
-
-        # subsample：每棵树使用的样本比例。
-        # 取值范围：0 到 1 之间，常见 0.5 到 1。
-        # 变化趋势：越小随机性越强，通常更能抑制过拟合；过小可能欠拟合。
         "subsample": [0.7],
-
-        # colsample_bytree：每棵树建树时抽取的特征比例。
-        # 取值范围：0 到 1 之间，常见 0.5 到 1。
-        # 变化趋势：越小越保守，有助于降低过拟合；过小可能损失信息。
         "colsample_bytree": [0.7],
-
-        # gamma：节点继续分裂所需的最小损失下降值。
-        # 取值范围：大于等于 0，常见 0 到 5。
-        # 变化趋势：越大越难分裂，模型越简单，越能限制过拟合。
         "gamma": [0.7],
-
-        # reg_alpha：L1 正则化强度。
-        # 取值范围：大于等于 0，常见 0 到 10。
-        # 变化趋势：越大越容易压缩不重要特征的作用，模型更稀疏、更保守。
-        "reg_alpha": [1],
-
-        # reg_lambda：L2 正则化强度。
-        # 取值范围：大于等于 0，常见 1 到 10。
-        # 变化趋势：越大约束越强，通常更稳，但过大可能欠拟合。
-        "reg_lambda": [1],
+        "reg_alpha": [1.0],
+        "reg_lambda": [1.0],
     }
-    return param_grid
 
 
-def get_paths(project_root):
-    """构造模型文件和结果文件路径。"""
-    model_dir = project_root / "models"
-    out_dir = project_root / "outputs" / MODEL_ID
-
-    model_dir.mkdir(parents=True, exist_ok=True)
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    paths = {
-        "model": model_dir / f"{MODEL_ID}.joblib",
-        "best_params": out_dir / "best_params.csv",
-        "cv_results": out_dir / "cv_results.csv",
-        "metrics": out_dir / "metrics.csv",
-    }
-    return paths
-
-
-def run_grid_search(X_train, y_train, param_grid):
-    """使用时间序列交叉验证执行网格搜索。"""
-    model = XGBClassifier(
+def build_model(params: dict) -> XGBClassifier:
+    """根据参数构造 XGBoost 模型。"""
+    return XGBClassifier(
         objective="binary:logistic",
         eval_metric="auc",
         random_state=RANDOM_STATE,
         n_jobs=N_JOBS,
         tree_method="hist",
         verbosity=0,
-    )
-    cv = TimeSeriesSplit(n_splits=CV_SPLITS)
-
-    search = GridSearchCV(
-        estimator=model,
-        param_grid=param_grid,
-        scoring=GRID_SEARCH_SCORING,
-        cv=cv,
-        n_jobs=N_JOBS,
-        refit=True,
-        verbose=1,
-    )
-    search.fit(X_train, y_train)
-
-    best_params_df = pd.DataFrame(
-        {
-            "parameter": list(search.best_params_.keys()) + ["best_cv_score"],
-            "value": list(search.best_params_.values()) + [search.best_score_],
-        }
+        **params,
     )
 
-    cv_results_df = pd.DataFrame(search.cv_results_).sort_values("rank_test_score")
 
-    return search.best_estimator_, best_params_df, cv_results_df
-
-
-def calc_ks(y_true, y_score):
-    """根据预测概率计算 KS 值。"""
-    fpr, tpr, _ = roc_curve(y_true, y_score)
-    return float((tpr - fpr).max())
-
-
-def save_model_bundle(model, model_file):
-    """保存模型对象。"""
-    bundle = {
-        "model_id": MODEL_ID,
-        "model": model,
-    }
-    joblib.dump(bundle, model_file)
-
-
-def load_model_bundle(model_file):
-    """读取模型对象。"""
-    if not model_file.exists():
-        raise FileNotFoundError(f"未找到模型文件：{model_file}")
-    return joblib.load(model_file)
+def save_search_outputs(
+    ctx: RuntimeContext,
+    best_params_df: pd.DataFrame,
+    search_df: pd.DataFrame,
+) -> None:
+    """保存超参数搜索结果。"""
+    best_params_df.to_csv(
+        ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "best_params.csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
+    search_df.to_csv(
+        ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "search_results.csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
 
 
-def save_training_outputs(best_params_df, cv_results_df, paths):
-    """保存最优参数表和交叉验证结果。"""
-    best_params_df.to_csv(paths["best_params"], index=False, encoding="utf-8-sig")
-    cv_results_df.to_csv(paths["cv_results"], index=False, encoding="utf-8-sig")
+def evaluate_and_save(
+    model,
+    datasets: dict[str, dict[str, object]],
+    feature_names: list[str],
+    ctx: RuntimeContext,
+) -> pd.DataFrame:
+    """计算并保存三段评估结果与预测明细。"""
+    metric_frames = []
+
+    for split_name in ["train", "valid", "test"]:
+        split_data = datasets[split_name]
+        X = align_features(split_data["X"], feature_names)
+        y = split_data["y"]
+        dates = split_data["dates"]
+
+        metric_frames.append(evaluate_model(model, X, y, split_name))
+        prediction_df = build_prediction_frame(model, dates, X, y, split_name)
+        prediction_df.to_csv(
+            ctx.paths.output_file(MODEL_ID, ctx.scheme_name, f"pred_{split_name}.csv"),
+            index=False,
+            encoding="utf-8-sig",
+        )
+
+    metrics_df = pd.concat(metric_frames, ignore_index=True)
+    metrics_df.to_csv(
+        ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "metrics.csv"),
+        index=False,
+        encoding="utf-8-sig",
+    )
+    return metrics_df
 
 
-def evaluate(model, X, y, dataset_name):
-    """计算指定数据集上的评估指标。"""
-    y_score = model.predict_proba(X)[:, 1]
-    y_pred = model.predict(X)
+def train_model(ctx: RuntimeContext) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """执行训练、搜索和结果保存。"""
+    cleanup_legacy_output_files(ctx)
+    datasets, feature_names = load_datasets(ctx)
 
-    metrics = {
-        "dataset": dataset_name,
-        "accuracy": accuracy_score(y, y_pred),
-        "precision": precision_score(y, y_pred, zero_division=0),
-        "recall": recall_score(y, y_pred, zero_division=0),
-        "f1": f1_score(y, y_pred, zero_division=0),
-        "auc": roc_auc_score(y, y_score),
-        "ks": calc_ks(y, y_score),
-    }
+    model, best_params_df, search_df = run_holdout_search(
+        build_model_fn=build_model,
+        param_grid=build_param_grid(),
+        X_train=datasets["train"]["X"],
+        y_train=datasets["train"]["y"],
+        X_valid=datasets["valid"]["X"],
+        y_valid=datasets["valid"]["y"],
+        metric_name=ctx.config.search_metric,
+    )
 
-    return pd.DataFrame([metrics])
+    ctx.paths.ensure_model_dirs(MODEL_ID, ctx.scheme_name)
+    save_model_bundle(
+        model=model,
+        model_file=ctx.paths.model_file(MODEL_ID, ctx.scheme_name),
+        model_id=MODEL_ID,
+        feature_names=feature_names,
+    )
+    save_search_outputs(ctx, best_params_df, search_df)
+    metrics_df = evaluate_and_save(model, datasets, feature_names, ctx)
+    return best_params_df, metrics_df
 
 
-def evaluate_saved_model(model_file, X_train, y_train, X_test, y_test):
-    """读取本地模型并评估训练集和测试集。"""
-    bundle = load_model_bundle(model_file)
+def evaluate_saved_model(ctx: RuntimeContext) -> pd.DataFrame:
+    """读取本地模型并保存三段评估结果。"""
+    datasets, _ = load_datasets(ctx)
+    bundle = load_model_bundle(ctx.paths.model_file(MODEL_ID, ctx.scheme_name))
     model = bundle["model"]
-
-    train_metrics = evaluate(model, X_train, y_train, "train")
-    test_metrics = evaluate(model, X_test, y_test, "test")
-
-    return pd.concat([train_metrics, test_metrics], ignore_index=True)
+    feature_names = require_feature_names(bundle)
+    ctx.paths.ensure_model_dirs(MODEL_ID, ctx.scheme_name)
+    return evaluate_and_save(model, datasets, feature_names, ctx)
 
 
-def save_metrics(metrics_df, metrics_file):
-    """保存评估结果表。"""
-    metrics_df.to_csv(metrics_file, index=False, encoding="utf-8-sig")
-
-
-def train(processed_dir, project_root):
-    """执行训练、搜索和模型保存。"""
-    X_train, y_train, _, _ = load_data(processed_dir)
-    paths = get_paths(project_root)
-    param_grid = build_param_grid()
-
-    model, best_params_df, cv_results_df = run_grid_search(X_train, y_train, param_grid)
-
-    save_model_bundle(model, paths["model"])
-    save_training_outputs(best_params_df, cv_results_df, paths)
-
-    return paths, best_params_df
-
-
-def evaluate_model(processed_dir, project_root):
-    """读取本地模型并保存训练集和测试集评估结果。"""
-    X_train, y_train, X_test, y_test = load_data(processed_dir)
-    paths = get_paths(project_root)
-
-    metrics_df = evaluate_saved_model(paths["model"], X_train, y_train, X_test, y_test)
-    save_metrics(metrics_df, paths["metrics"])
-
-    return metrics_df, paths
-
-
-def parse_args():
+def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser()
-    parser.add_argument("--train", action="store_true")
-    parser.add_argument("--evaluate", action="store_true")
+    parser.add_argument("--asset", required=True)
+    parser.add_argument("--horizon", type=int, required=True)
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument("--train", action="store_true")
+    mode_group.add_argument("--evaluate", action="store_true")
     return parser.parse_args()
 
 
-def main():
+def main() -> None:
     """执行训练、评估或训练后评估。"""
     args = parse_args()
+    ctx = get_runtime_context(asset_alias=args.asset, horizon=args.horizon)
 
-    project_root = Path(__file__).resolve().parent.parent
-    processed_dir = project_root / "data" / "processed"
-
-    run_train = args.train or (not args.train and not args.evaluate)
-    run_evaluate = args.evaluate or (not args.train and not args.evaluate)
-
-    if run_train:
-        paths, best_params_df = train(processed_dir, project_root)
-        print("训练完成，文件已保存：")
-        print(paths["model"])
-        print(paths["best_params"])
-        print(paths["cv_results"])
+    if args.train:
+        best_params_df, metrics_df = train_model(ctx)
+        print("训练完成，已保存：")
+        print(ctx.paths.model_file(MODEL_ID, ctx.scheme_name))
+        print(ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "best_params.csv"))
+        print(ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "search_results.csv"))
+        print(ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "metrics.csv"))
         print("\n最优超参数：")
         print(best_params_df)
-
-    if run_evaluate:
-        metrics_df, paths = evaluate_model(processed_dir, project_root)
-        print("\n训练集和测试集评估结果：")
+        print("\n评估结果：")
         print(metrics_df)
-        print("\n评估结果文件：")
-        print(paths["metrics"])
+    else:
+        metrics_df = evaluate_saved_model(ctx)
+        print("已重新计算评估结果：")
+        print(ctx.paths.output_file(MODEL_ID, ctx.scheme_name, "metrics.csv"))
+        print(metrics_df)
 
 
 if __name__ == "__main__":
