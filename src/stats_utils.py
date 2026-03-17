@@ -3,6 +3,8 @@ from pathlib import Path
 import pandas as pd
 
 
+# 描述统计只面向数值列，并允许显式排除目标列，
+# 输出结构固定为“字段名 + 描述统计量 + 偏度峰度”。
 def save_descriptive_stats(
     df: pd.DataFrame,
     desc_file: Path,

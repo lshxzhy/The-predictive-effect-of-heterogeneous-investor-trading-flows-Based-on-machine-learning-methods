@@ -5,6 +5,7 @@ import pandas as pd
 from config import HorizonRuntimeContext, PipelineConfig, get_asset_context, get_horizon_context
 
 
+# 统一筛选层显式接收资产列表，并在入口就拦住空列表或重复资产。
 def resolve_asset_aliases(asset_arg: str) -> list[str]:
     """解析需要拼接的资产简称列表。"""
     asset_aliases = [item.strip() for item in asset_arg.split(",") if item.strip()]
@@ -15,6 +16,8 @@ def resolve_asset_aliases(asset_arg: str) -> list[str]:
     return asset_aliases
 
 
+# 读取单资产 screening_ready_panel；这里默认资产内的缺失填充和标准化已经完成，
+# 本脚本只负责复核后再做跨资产拼接。
 def load_single_screening_panel(
     base_ctx: HorizonRuntimeContext,
     asset_alias: str,
@@ -27,6 +30,8 @@ def load_single_screening_panel(
     return pd.read_csv(asset_ctx.paths.screening_ready_panel_file(), parse_dates=["Date"])
 
 
+# 先把每个资产按 train/valid/test 分桶，再分别收集三段面板，
+# 这样统一长面板的顺序就是“全部 train -> 全部 valid -> 全部 test”。
 def collect_split_frames(
     base_ctx: HorizonRuntimeContext,
     asset_aliases: list[str],
@@ -72,6 +77,7 @@ def collect_split_frames(
     return split_frames
 
 
+# 统一长面板是进入筛选模型的直接输入，因此在拼接后再做一次无缺失硬校验。
 def validate_no_missing_features(df: pd.DataFrame, feature_cols: list[str]) -> None:
     """校验拼接后的统一筛选长面板不再存在特征缺失。"""
     missing_counts = df.loc[:, feature_cols].isna().sum()
@@ -80,6 +86,8 @@ def validate_no_missing_features(df: pd.DataFrame, feature_cols: list[str]) -> N
         raise ValueError(f"统一筛选长面板仍存在特征缺失：{missing_counts.to_dict()}")
 
 
+# 长面板只拼接补充候选变量，不带固定保留的 3 个交易流指标，
+# 因为那 3 列不参与统一筛选淘汰，只在后续正式建模时强制保留。
 def build_long_panel(
     base_ctx: HorizonRuntimeContext,
     asset_aliases: list[str],
@@ -100,6 +108,7 @@ def build_long_panel(
     return long_panel_df
 
 
+# 长面板阶段同样要求显式给出 --assets。
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser()
@@ -107,6 +116,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# 统一筛选固定使用 1d 标签，这里只负责把各资产的 screening_ready_panel 合成一张 pooled 长面板。
 def main() -> None:
     """生成固定 1d 筛选期限的统一长面板。"""
     args = parse_args()

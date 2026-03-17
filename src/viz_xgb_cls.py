@@ -4,18 +4,14 @@ import matplotlib.pyplot as plt
 import pandas as pd
 
 from config import RuntimeContext, get_runtime_context
+from plot_utils import MONO_BAR_COLOR, MONO_EDGE_COLOR, configure_monochrome_matplotlib
 from training_utils import load_model_bundle, require_feature_names
 
 
 MODEL_ID = "xgb_cls"
 
 
-def configure_matplotlib() -> None:
-    """设置绘图参数。"""
-    plt.rcParams["font.sans-serif"] = ["Microsoft YaHei", "SimHei", "Arial Unicode MS"]
-    plt.rcParams["axes.unicode_minus"] = False
-
-
+# 可视化脚本只读取已经训练完成的 XGBoost 模型及其特征名。
 def load_model_and_features(ctx: RuntimeContext):
     """读取模型和训练时特征名。"""
     bundle = load_model_bundle(ctx.paths.model_file(MODEL_ID, ctx.scheme_name))
@@ -24,6 +20,7 @@ def load_model_and_features(ctx: RuntimeContext):
     return model, feature_names
 
 
+# XGBoost 重要性直接使用模型保存的 feature_importances_ 结果。
 def build_feature_importance(model, feature_names: list[str]) -> pd.DataFrame:
     """整理特征重要性结果。"""
     return pd.DataFrame(
@@ -34,12 +31,18 @@ def build_feature_importance(model, feature_names: list[str]) -> pd.DataFrame:
     ).sort_values("importance", ascending=False)
 
 
+# XGBoost 重要性图固定展示前 20 个变量，并统一使用黑白灰条形图。
 def plot_feature_importance(importance_df: pd.DataFrame, output_file) -> None:
     """绘制特征重要性图。"""
     plot_df = importance_df.sort_values("importance", ascending=True).tail(20)
 
     plt.figure(figsize=(10, 8))
-    plt.barh(plot_df["feature"], plot_df["importance"])
+    plt.barh(
+        plot_df["feature"],
+        plot_df["importance"],
+        color=MONO_BAR_COLOR,
+        edgecolor=MONO_EDGE_COLOR,
+    )
     plt.xlabel("Importance")
     plt.ylabel("Feature")
     plt.title("XGBoost Feature Importance")
@@ -48,6 +51,7 @@ def plot_feature_importance(importance_df: pd.DataFrame, output_file) -> None:
     plt.close()
 
 
+# 可视化脚本依旧要求显式传入 asset 和 horizon。
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。"""
     parser = argparse.ArgumentParser()
@@ -56,10 +60,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+# 统一输出 XGBoost 的重要性表和重要性图。
 def main() -> None:
     """输出 XGBoost 可视化结果。"""
     args = parse_args()
-    configure_matplotlib()
+    configure_monochrome_matplotlib()
     ctx = get_runtime_context(asset_alias=args.asset, horizon=args.horizon)
 
     model, feature_names = load_model_and_features(ctx)

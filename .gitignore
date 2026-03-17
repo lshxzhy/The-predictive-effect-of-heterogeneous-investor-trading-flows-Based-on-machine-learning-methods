@@ -3,11 +3,14 @@ data/
 docs/
 references/
 models/
-outputs/dt_cls/
+outputs/
+
+# Local workflow docs
 AGENTS.md
 PROJECT_STATUS.md
-LEARNING_WORKFLOW.md
 
+# Excel temp files
+~$*.xlsx
 
 # Python cache
 __pycache__/
@@ -20,6 +23,3 @@ __pycache__/
 .DS_Store
 Thumbs.db
 .vscode/
-
-
-outputs/

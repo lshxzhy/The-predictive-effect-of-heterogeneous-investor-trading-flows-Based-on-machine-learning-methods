@@ -15,6 +15,7 @@ from sklearn.metrics import (
 from sklearn.model_selection import ParameterGrid
 
 
+# KS 只依赖真实标签和正类概率，用于补充 AUC 之外的排序区分能力诊断。
 def calc_ks(y_true: pd.Series, y_score: np.ndarray) -> float:
     """计算 KS 指标。"""
     if pd.Series(y_true).nunique() < 2:
@@ -23,6 +24,8 @@ def calc_ks(y_true: pd.Series, y_score: np.ndarray) -> float:
     return float((tpr - fpr).max())
 
 
+# 统一把分类模型在单个数据集上的核心指标收口成一行表，
+# 这样筛选搜索、正式训练和可视化都能复用同一评估结构。
 def evaluate_model(
     model,
     X: pd.DataFrame,
@@ -49,6 +52,8 @@ def evaluate_model(
     return pd.DataFrame([metrics])
 
 
+# 预测明细保留 Date、数据集分段、真实值、预测值和概率，
+# 主要给后续可视化或误判诊断使用。
 def build_prediction_frame(
     model,
     dates: pd.Series,
@@ -70,6 +75,8 @@ def build_prediction_frame(
     )
 
 
+# 把搜索指标名映射到评估表里的实际列名，
+# 并统一处理 NaN 指标，避免超参搜索时出现隐式比较错误。
 def get_metric_score(metric_name: str, metrics_row: pd.Series) -> float:
     """从评估结果中提取搜索分数。"""
     metric_map = {
@@ -94,6 +101,8 @@ def get_metric_score(metric_name: str, metrics_row: pd.Series) -> float:
     return float(score_value)
 
 
+# 这是通用 holdout 搜索器：在 train 上拟合、在 valid 上打分，
+# 最终返回最佳模型、最佳参数表和完整搜索日志。
 def run_holdout_search(
     build_model_fn,
     param_grid: dict,
@@ -142,6 +151,7 @@ def run_holdout_search(
     return best_model, best_params_df, search_df
 
 
+# 模型包必须显式带上训练时特征顺序，否则推理阶段无法保证列对齐。
 def require_feature_names(bundle: dict) -> list[str]:
     """读取模型中保存的特征名。"""
     if "feature_names" not in bundle:
@@ -154,6 +164,8 @@ def require_feature_names(bundle: dict) -> list[str]:
     return feature_names
 
 
+# 统一把模型对象、模型标识和特征顺序一起打包保存，
+# 避免后续只剩裸模型而不知道训练时的输入列。
 def save_model_bundle(
     model,
     model_file: Path,
@@ -170,11 +182,14 @@ def save_model_bundle(
     joblib.dump(bundle, model_file)
 
 
+# 读取模型包时不做额外推断，缺字段由下游显式校验。
 def load_model_bundle(model_file: Path):
     """读取模型对象。"""
     return joblib.load(model_file)
 
 
+# 推理输入必须按训练时保存的特征顺序重排，
+# 只要缺任何一列就直接报错，避免静默错列。
 def align_features(X: pd.DataFrame, feature_names: list[str]) -> pd.DataFrame:
     """按训练时的特征顺序对齐输入矩阵。"""
     missing_cols = [col for col in feature_names if col not in X.columns]
