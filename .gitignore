@@ -1,25 +1,36 @@
-# Data and private materials
-data/
-docs/
-references/
-models/
-outputs/
-
-# Local workflow docs
-AGENTS.md
-PROJECT_STATUS.md
-
-# Excel temp files
-~$*.xlsx
-
-# Python cache
+# Python cache and local environments
 __pycache__/
-*.pyc
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
 
-# Notebook / temp
-.ipynb_checkpoints/
+# Raw, processed, generated and model artifacts are intentionally not versioned
+data/**
+models/**
+outputs/**
+论文已用需更新图表/**
+论文结果_*/**
 
-# OS / editor
+# Keep explanatory placeholders
+!data/
+!data/README.md
+!models/
+!models/README.md
+!outputs/
+!outputs/README.md
+
+# Local documents and office temp files
+*.docx
+~$*.xlsx
+~$*.docx
+
+# OS/editor
 .DS_Store
 Thumbs.db
 .vscode/
+.idea/
+
